@@ -145,12 +145,15 @@ class WN(torch.nn.Module):
       res_skip_layer = torch.nn.utils.weight_norm(res_skip_layer, name='weight')
       self.res_skip_layers.append(res_skip_layer)
 
-  def forward(self, x, x_mask, g=None, **kwargs):
+  def forward(self, x, x_mask, g=None, l=None **kwargs):
     output = torch.zeros_like(x)
     n_channels_tensor = torch.IntTensor([self.hidden_channels])
 
     if g is not None:
       g = self.cond_layer(g)
+    
+    if l is not None:
+      l = self.cond_layer(l)
 
     for i in range(self.n_layers):
       x_in = self.in_layers[i](x)
@@ -159,6 +162,20 @@ class WN(torch.nn.Module):
         g_l = g[:,cond_offset:cond_offset+2*self.hidden_channels,:]
       else:
         g_l = torch.zeros_like(x_in)
+      
+      if l is not None:
+        cond_offset = i * 2 * self.hidden_channels
+        l_l = l[:,cond_offset:cond_offset+2*self.hidden_channels,:]
+      else:
+        l_l = torch.zeros_like(x_in)
+
+      l_acts = commons.fused_add_tanh_sigmoid_multiply(
+        x_in,
+        l_l,
+        n_channels_tensor
+      )
+      l_acts = self.drop(l_acts)
+      res_skip_l_acts = self.res_skip_layers[i](l_acts)
 
       acts = commons.fused_add_tanh_sigmoid_multiply(
           x_in,
@@ -169,10 +186,11 @@ class WN(torch.nn.Module):
       res_skip_acts = self.res_skip_layers[i](acts)
       if i < self.n_layers - 1:
         res_acts = res_skip_acts[:,:self.hidden_channels,:]
-        x = (x + res_acts) * x_mask
-        output = output + res_skip_acts[:,self.hidden_channels:,:]
+        res_l_acts = res_skip_l_acts[:,:self.hidden_channels,:]
+        x = (x + res_acts + res_l_acts) * x_mask
+        output = output + res_skip_acts[:,self.hidden_channels:,:] + res_skip_l_acts[:,self.hidden_channels:,:]
       else:
-        output = output + res_skip_acts
+        output = output + res_skip_acts + res_skip_l_acts
     return output * x_mask
 
   def remove_weight_norm(self):
@@ -321,10 +339,10 @@ class ResidualCouplingLayer(nn.Module):
     self.post.weight.data.zero_()
     self.post.bias.data.zero_()
 
-  def forward(self, x, x_mask, g=None, reverse=False):
+  def forward(self, x, x_mask, g=None, l=None, reverse=False):
     x0, x1 = torch.split(x, [self.half_channels]*2, 1)
     h = self.pre(x0) * x_mask
-    h = self.enc(h, x_mask, g=g)
+    h = self.enc(h, x_mask, g=g, l=l)
     stats = self.post(h) * x_mask
     if not self.mean_only:
       m, logs = torch.split(stats, [self.half_channels]*2, 1)
