@@ -7,7 +7,7 @@ from itertools import chain
 
 from utils import get_hparams
 
-hps = get_hparams()
+hps = get_hparams(init=False)
 
 # Export all symbols:
 symbols = list(
