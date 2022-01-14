@@ -175,6 +175,48 @@ class TextEncoder(nn.Module):
     m, logs = torch.split(stats, self.out_channels, dim=1)
     return x, m, logs, x_mask
 
+class TextPFEncoder(nn.Module):
+  def __init__(self,
+      n_feats,
+      out_channels,
+      hidden_channels,
+      filter_channels,
+      n_heads,
+      n_layers,
+      kernel_size,
+      p_dropout):
+    super().__init__()
+    self.n_feats = n_feats
+    self.out_channels = out_channels
+    self.hidden_channels = hidden_channels
+    self.filter_channels = filter_channels
+    self.n_heads = n_heads
+    self.n_layers = n_layers
+    self.kernel_size = kernel_size
+    self.p_dropout = p_dropout
+
+    self.emb = nn.Linear(n_feats, hidden_channels, bias=False)
+    nn.init.normal_(self.emb.weight, 0.0, hidden_channels**-0.5)
+
+    self.encoder = attentions.Encoder(
+      hidden_channels,
+      filter_channels,
+      n_heads,
+      n_layers,
+      kernel_size,
+      p_dropout)
+    self.proj= nn.Conv1d(hidden_channels, out_channels * 2, 1)
+
+  def forward(self, x, x_lengths):
+    x = self.emb(x) * math.sqrt(self.hidden_channels) # [b, t, h]
+    x = torch.transpose(x, 1, -1) # [b, h, t]
+    x_mask = torch.unsqueeze(commons.sequence_mask(x_lengths, x.size(2)), 1).to(x.dtype)
+
+    x = self.encoder(x * x_mask, x_mask)
+    stats = self.proj(x) * x_mask
+
+    m, logs = torch.split(stats, self.out_channels, dim=1)
+    return x, m, logs, x_mask
 
 class ResidualCouplingBlock(nn.Module):
   def __init__(self,
@@ -435,15 +477,24 @@ class SynthesizerTrn(nn.Module):
     self.gin_channels = gin_channels
 
     self.use_sdp = use_sdp
-
-    self.enc_p = TextEncoder(n_vocab,
-        inter_channels,
-        hidden_channels,
-        filter_channels,
-        n_heads,
-        n_layers,
-        kernel_size,
-        p_dropout)
+    if kwargs.use_pf:
+      self.enc_p = TextPFEncoder(n_vocab,
+          inter_channels,
+          hidden_channels,
+          filter_channels,
+          n_heads,
+          n_layers,
+          kernel_size,
+          p_dropout)
+    else:
+      self.enc_p = TextEncoder(n_vocab,
+          inter_channels,
+          hidden_channels,
+          filter_channels,
+          n_heads,
+          n_layers,
+          kernel_size,
+          p_dropout)
     self.dec = Generator(inter_channels, resblock, resblock_kernel_sizes, resblock_dilation_sizes, upsample_rates, upsample_initial_channel, upsample_kernel_sizes, gin_channels=gin_channels)
     self.enc_q = PosteriorEncoder(spec_channels, inter_channels, hidden_channels, 5, 1, 16, gin_channels=gin_channels)
     self.flow = ResidualCouplingBlock(inter_channels, hidden_channels, 5, 1, 4, gin_channels=gin_channels)
