@@ -1,38 +1,27 @@
-import os
-import json
 import argparse
 import itertools
+import json
 import math
+import os
+
 import torch
+import torch.distributed as dist
+import torch.multiprocessing as mp
 from torch import nn, optim
+from torch.cuda.amp import GradScaler, autocast
 from torch.nn import functional as F
+from torch.nn.parallel import DistributedDataParallel as DDP
 from torch.utils.data import DataLoader
 from torch.utils.tensorboard import SummaryWriter
-import torch.multiprocessing as mp
-import torch.distributed as dist
-from torch.nn.parallel import DistributedDataParallel as DDP
-from torch.cuda.amp import autocast, GradScaler
 
 import commons
 import utils
-from data_utils import (
-  TextAudioSpeakerLoader,
-  TextAudioSpeakerCollate,
-  DistributedBucketSampler
-)
-from models import (
-  SynthesizerTrn,
-  MultiPeriodDiscriminator,
-)
-from losses import (
-  generator_loss,
-  discriminator_loss,
-  feature_loss,
-  kl_loss
-)
+from data_utils import (DistributedBucketSampler, TextAudioSpeakerCollate,
+                        TextAudioSpeakerLoader)
+from losses import discriminator_loss, feature_loss, generator_loss, kl_loss
 from mel_processing import mel_spectrogram_torch, spec_to_mel_torch
+from models import MultiPeriodDiscriminator, SynthesizerTrn
 from text.symbols import symbols
-
 
 torch.backends.cudnn.benchmark = True
 global_step = 0
@@ -80,8 +69,13 @@ def run(rank, n_gpus, hps):
         batch_size=hps.train.batch_size, pin_memory=True,
         drop_last=False, collate_fn=collate_fn)
 
+  if hps.data.n_feats > 0:
+    vocab = hps.data.n_feats
+  else:
+    vocab = len(symbols)
+
   net_g = SynthesizerTrn(
-      len(symbols),
+      vocab,
       hps.data.filter_length // 2 + 1,
       hps.train.segment_size // hps.data.hop_length,
       n_speakers=hps.data.n_speakers,

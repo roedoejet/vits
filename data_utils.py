@@ -1,14 +1,15 @@
-import time
 import os
 import random
+import time
+
 import numpy as np
 import torch
 import torch.utils.data
 
-import commons 
+import commons
 from mel_processing import spectrogram_torch
-from utils import load_wav_to_torch, load_filepaths_and_text
-from text import text_to_sequence, cleaned_text_to_sequence
+from text import cleaned_text_to_sequence, text_to_sequence
+from utils import load_filepaths_and_text, load_wav_to_torch
 
 
 class TextAudioLoader(torch.utils.data.Dataset):
@@ -19,6 +20,8 @@ class TextAudioLoader(torch.utils.data.Dataset):
     """
     def __init__(self, audiopaths_and_text, hparams):
         self.audiopaths_and_text = load_filepaths_and_text(audiopaths_and_text)
+        self.use_pfs = hparams.model.use_pfs
+        hparams = hparams.data
         self.text_cleaners  = hparams.text_cleaners
         self.max_wav_value  = hparams.max_wav_value
         self.sampling_rate  = hparams.sampling_rate
@@ -36,6 +39,8 @@ class TextAudioLoader(torch.utils.data.Dataset):
         random.seed(1234)
         random.shuffle(self.audiopaths_and_text)
         self._filter()
+        
+        self.n_feats = hparams.n_feats
 
 
     def _filter(self):
@@ -58,7 +63,11 @@ class TextAudioLoader(torch.utils.data.Dataset):
     def get_audio_text_pair(self, audiopath_and_text):
         # separate filename and text
         audiopath, text = audiopath_and_text[0], audiopath_and_text[1]
-        text = self.get_text(text)
+        if self.use_pfs:
+            basename, _ = os.path.splitext(os.path.basename(audiopath_and_text[0]))
+            text = self.get_text_feats(basename)
+        else:
+            text = self.get_text(text)
         spec, wav = self.get_audio(audiopath)
         return (text, spec, wav)
 
@@ -89,6 +98,18 @@ class TextAudioLoader(torch.utils.data.Dataset):
             text_norm = commons.intersperse(text_norm, 0)
         text_norm = torch.LongTensor(text_norm)
         return text_norm
+    
+    def get_text_feats(self, basename):
+        feats = np.load(f'feats/0-0-feat-{basename}.npy')
+        if self.add_blank:
+            zeros = np.zeros_like(feats)
+            feats = np.hstack([zeros, feats]).reshape(feats.shape[0]*2, self.n_feats)
+            feats = np.pad(feats, [(0,1),(0,0)]) # add zeros at end of t
+        try:
+            feats = torch.from_numpy(feats).float()
+        except:
+            print(feats)
+        return feats
 
     def __getitem__(self, index):
         return self.get_audio_text_pair(self.audiopaths_and_text[index])
@@ -100,8 +121,10 @@ class TextAudioLoader(torch.utils.data.Dataset):
 class TextAudioCollate():
     """ Zero-pads model inputs and targets
     """
-    def __init__(self, return_ids=False):
+    def __init__(self, use_pfs=False, n_feats=0, return_ids=False):
         self.return_ids = return_ids
+        self.use_pfs = use_pfs
+        self.n_feats = n_feats
 
     def __call__(self, batch):
         """Collate's training batch from normalized text and aduio
@@ -122,7 +145,10 @@ class TextAudioCollate():
         spec_lengths = torch.LongTensor(len(batch))
         wav_lengths = torch.LongTensor(len(batch))
 
-        text_padded = torch.LongTensor(len(batch), max_text_len)
+        if self.use_pfs:
+            text_padded = torch.FloatTensor(len(batch), max_text_len, self.n_feats)
+        else:
+            text_padded = torch.LongTensor(len(batch), max_text_len)
         spec_padded = torch.FloatTensor(len(batch), batch[0][1].size(0), max_spec_len)
         wav_padded = torch.FloatTensor(len(batch), 1, max_wav_len)
         text_padded.zero_()
@@ -130,9 +156,12 @@ class TextAudioCollate():
         wav_padded.zero_()
         for i in range(len(ids_sorted_decreasing)):
             row = batch[ids_sorted_decreasing[i]]
-
+            
             text = row[0]
-            text_padded[i, :text.size(0)] = text
+            if self.use_pfs:
+                text_padded[i, :text.size(0), :text.size(1)] = text
+            else:
+                text_padded[i, :text.size(0)] = text
             text_lengths[i] = text.size(0)
 
             spec = row[1]

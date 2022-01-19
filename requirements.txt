@@ -9,3 +9,6 @@ tensorboard==2.3.0
 torch==1.6.0
 torchvision==0.7.0
 Unidecode==1.1.1
+g2p==0.5.20211217
+panphon==0.19.1
+loguru==0.5.3

@@ -1,16 +1,15 @@
 """ from https://github.com/keithito/tacotron """
 import re
-from nltk.tokenize import RegexpTokenizer
 
 from text import cleaners
-from text.symbols import symbols
-
+from text.symbols import hps, symbols
+from utils import create_tokenizer
 
 # Mappings from symbol to numeric ID and vice versa:
-_symbol_to_id = {s: i for i, s in enumerate(symbols)}
-_id_to_symbol = {i: s for i, s in enumerate(symbols)}
-
-TOKENIZER = RegexpTokenizer('|'.join([re.escape(x) for x in symbols]))
+if not hps.data.n_langs > 1:
+  _symbol_to_id = {s: i for i, s in enumerate(symbols)}
+  _id_to_symbol = {i: s for i, s in enumerate(symbols)}
+  TOKENIZER = create_tokenizer(symbols)
 
 def text_to_sequence(text, cleaner_names):
   '''Converts a string of text to a sequence of IDs corresponding to the symbols in the text.

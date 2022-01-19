@@ -1,38 +1,27 @@
-import os
-import json
 import argparse
 import itertools
+import json
 import math
+import os
+
 import torch
+import torch.distributed as dist
+import torch.multiprocessing as mp
 from torch import nn, optim
+from torch.cuda.amp import GradScaler, autocast
 from torch.nn import functional as F
+from torch.nn.parallel import DistributedDataParallel as DDP
 from torch.utils.data import DataLoader
 from torch.utils.tensorboard import SummaryWriter
-import torch.multiprocessing as mp
-import torch.distributed as dist
-from torch.nn.parallel import DistributedDataParallel as DDP
-from torch.cuda.amp import autocast, GradScaler
 
 import commons
 import utils
-from data_utils import (
-  TextAudioLoader,
-  TextAudioCollate,
-  DistributedBucketSampler
-)
-from models import (
-  SynthesizerTrn,
-  MultiPeriodDiscriminator,
-)
-from losses import (
-  generator_loss,
-  discriminator_loss,
-  feature_loss,
-  kl_loss
-)
+from data_utils import (DistributedBucketSampler, TextAudioCollate,
+                        TextAudioLoader)
+from losses import discriminator_loss, feature_loss, generator_loss, kl_loss
 from mel_processing import mel_spectrogram_torch, spec_to_mel_torch
+from models import MultiPeriodDiscriminator, SynthesizerTrn
 from text.symbols import symbols
-
 
 torch.backends.cudnn.benchmark = True
 global_step = 0
@@ -50,6 +39,26 @@ def main():
   mp.spawn(run, nprocs=n_gpus, args=(n_gpus, hps,))
 
 
+def load_data(rank, n_gpus, hps):
+  train_dataset = TextAudioLoader(hps.data.training_files, hps)
+  train_sampler = DistributedBucketSampler(
+      train_dataset,
+      hps.train.batch_size,
+      [32,300,400,500,600,700,800,900,1000],
+      num_replicas=n_gpus,
+      rank=rank,
+      shuffle=True)
+  collate_fn = TextAudioCollate(use_pfs=hps.model.use_pfs, n_feats=hps.data.n_feats)
+  train_loader = DataLoader(train_dataset, num_workers=8, shuffle=False, pin_memory=True,
+      collate_fn=collate_fn, batch_sampler=train_sampler)
+  if rank == 0:
+    eval_dataset = TextAudioLoader(hps.data.validation_files, hps)
+    eval_loader = DataLoader(eval_dataset, num_workers=8, shuffle=False,
+        batch_size=hps.train.batch_size, pin_memory=True,
+        drop_last=False, collate_fn=collate_fn)
+  return train_dataset, train_loader, eval_dataset, eval_loader
+
+
 def run(rank, n_gpus, hps):
   global global_step
   if rank == 0:
@@ -63,25 +72,17 @@ def run(rank, n_gpus, hps):
   torch.manual_seed(hps.train.seed)
   torch.cuda.set_device(rank)
 
-  train_dataset = TextAudioLoader(hps.data.training_files, hps.data)
-  train_sampler = DistributedBucketSampler(
-      train_dataset,
-      hps.train.batch_size,
-      [32,300,400,500,600,700,800,900,1000],
-      num_replicas=n_gpus,
-      rank=rank,
-      shuffle=True)
-  collate_fn = TextAudioCollate()
-  train_loader = DataLoader(train_dataset, num_workers=8, shuffle=False, pin_memory=True,
-      collate_fn=collate_fn, batch_sampler=train_sampler)
-  if rank == 0:
-    eval_dataset = TextAudioLoader(hps.data.validation_files, hps.data)
-    eval_loader = DataLoader(eval_dataset, num_workers=8, shuffle=False,
-        batch_size=hps.train.batch_size, pin_memory=True,
-        drop_last=False, collate_fn=collate_fn)
+  if hps.data.n_feats > 0:
+    vocab = hps.data.n_feats
+    use_pfs = True
+  else:
+    vocab = len(symbols)
+    use_pfs = False
 
+  train_dataset, train_loader, eval_dataset, eval_loader = load_data(rank, n_gpus, hps)
+  
   net_g = SynthesizerTrn(
-      len(symbols),
+      vocab,
       hps.data.filter_length // 2 + 1,
       hps.train.segment_size // hps.data.hop_length,
       **hps.model).cuda(rank)
