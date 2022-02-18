@@ -5,6 +5,7 @@ nltk==3.6.7
 numpy==1.18.5
 phonemizer==2.2.1
 scipy==1.5.2
+tgt==1.4.4
 tensorboard==2.3.0
 torch==1.6.0
 torchvision==0.7.0

@@ -52,7 +52,32 @@
         "upsample_initial_channel": 512,
         "upsample_kernel_sizes": [16, 16, 4, 4],
         "n_layers_q": 3,
-        "use_spectral_norm": false
+        "use_spectral_norm": false,
+        "variance_embedding": {
+            "pitch_quantization": "linear",
+            "energy_quantization": "linear",
+            "n_bins": 192
+        },
+        "variance_predictor": {
+            "filter_size": 192,
+            "kernel_size": 3,
+            "dropout": 0.5,
+            "use_energy_predictor": true
+        }
+    },
+    "preprocess": {
+        "preprocess_path": {
+            "preprocessed_path": "./preprocessed_data/penac"
+        },
+        "preprocessing": {
+            "pitch": {
+                "feature": "phoneme_level"
+            },
+            "energy": {
+                "feature": "phoneme_level"
+            }
+        }
+
     },
     "symbols": {
         "pad": "_",
