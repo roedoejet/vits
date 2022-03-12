@@ -30,6 +30,7 @@ global_step = 0
 
 MSE_LOSS = nn.MSELoss()
 
+NUM_WORKERS = 0
 
 def main():
     """Assume Single Node Multi GPUs Training Only"""
@@ -49,8 +50,18 @@ def main():
         ),
     )
 
+def main_debug():
+    """Single Node Single GPU for Debugging"""
+    assert torch.cuda.is_available(), "CPU training is not allowed."
+    n_gpus = torch.cuda.device_count()
+    os.environ["MASTER_ADDR"] = "localhost"
+    os.environ["MASTER_PORT"] = "80000"
 
-def run(rank, n_gpus, hps):
+    hps = utils.get_hparams()
+    run(0, n_gpus, hps, debug=True)
+
+
+def run(rank, n_gpus, hps, debug=False):
     global global_step
     if rank == 0:
         logger = utils.get_logger(hps.model_dir)
@@ -58,10 +69,10 @@ def run(rank, n_gpus, hps):
         utils.check_git_hash(hps.model_dir)
         writer = SummaryWriter(log_dir=hps.model_dir)
         writer_eval = SummaryWriter(log_dir=os.path.join(hps.model_dir, "eval"))
-
-    dist.init_process_group(
-        backend="nccl", init_method="env://", world_size=n_gpus, rank=rank
-    )
+    if not debug:
+        dist.init_process_group(
+            backend="nccl", init_method="env://", world_size=n_gpus, rank=rank
+        )
     torch.manual_seed(hps.train.seed)
     torch.cuda.set_device(rank)
 
@@ -77,7 +88,7 @@ def run(rank, n_gpus, hps):
     collate_fn = TextAudioCollate()
     train_loader = DataLoader(
         train_dataset,
-        num_workers=8,
+        num_workers=NUM_WORKERS,
         shuffle=False,
         pin_memory=True,
         collate_fn=collate_fn,
@@ -87,7 +98,7 @@ def run(rank, n_gpus, hps):
         eval_dataset = TextAudioLoader(hps.data.validation_files, hps.data)
         eval_loader = DataLoader(
             eval_dataset,
-            num_workers=8,
+            num_workers=NUM_WORKERS,
             shuffle=False,
             batch_size=hps.train.batch_size,
             pin_memory=True,
@@ -116,8 +127,9 @@ def run(rank, n_gpus, hps):
         betas=hps.train.betas,
         eps=hps.train.eps,
     )
-    net_g = DDP(net_g, device_ids=[rank])
-    net_d = DDP(net_d, device_ids=[rank])
+    if not debug:
+        net_g = DDP(net_g, device_ids=[rank])
+        net_d = DDP(net_d, device_ids=[rank])
 
     try:
         _, _, _, epoch_str = utils.load_checkpoint(
@@ -153,6 +165,7 @@ def run(rank, n_gpus, hps):
                 [train_loader, eval_loader],
                 logger,
                 [writer, writer_eval],
+                debug=debug
             )
         else:
             train_and_evaluate(
@@ -166,13 +179,14 @@ def run(rank, n_gpus, hps):
                 [train_loader, None],
                 None,
                 None,
+                debug=debug
             )
         scheduler_g.step()
         scheduler_d.step()
 
 
 def train_and_evaluate(
-    rank, epoch, hps, nets, optims, schedulers, scaler, loaders, logger, writers
+    rank, epoch, hps, nets, optims, schedulers, scaler, loaders, logger, writers, debug
 ):
     net_g, net_d = nets
     optim_g, optim_d = optims
@@ -180,10 +194,9 @@ def train_and_evaluate(
     train_loader, eval_loader = loaders
     if writers is not None:
         writer, writer_eval = writers
-
     train_loader.batch_sampler.set_epoch(epoch)
     global global_step
-
+    NON_BLOCKING = not debug
     net_g.train()
     net_d.train()
     for batch_idx, (
@@ -200,25 +213,25 @@ def train_and_evaluate(
         pitch_targets,
         pitch_target_lengths,
     ) in enumerate(train_loader):
-        x, x_lengths = x.cuda(rank, non_blocking=True), x_lengths.cuda(
-            rank, non_blocking=True
+        x, x_lengths = x.cuda(rank, non_blocking=NON_BLOCKING), x_lengths.cuda(
+            rank, non_blocking=NON_BLOCKING
         )
-        spec, spec_lengths = spec.cuda(rank, non_blocking=True), spec_lengths.cuda(
-            rank, non_blocking=True
+        spec, spec_lengths = spec.cuda(rank, non_blocking=NON_BLOCKING), spec_lengths.cuda(
+            rank, non_blocking=NON_BLOCKING
         )
-        y, y_lengths = y.cuda(rank, non_blocking=True), y_lengths.cuda(
-            rank, non_blocking=True
+        y, y_lengths = y.cuda(rank, non_blocking=NON_BLOCKING), y_lengths.cuda(
+            rank, non_blocking=NON_BLOCKING
         )
 
         dur_targets, dur_target_lengths = dur_targets.cuda(
-            rank, non_blocking=True
-        ), dur_target_lengths.cuda(rank, non_blocking=True)
+            rank, non_blocking=NON_BLOCKING
+        ), dur_target_lengths.cuda(rank, non_blocking=NON_BLOCKING)
         energy_targets, energy_target_lengths = energy_targets.cuda(
-            rank, non_blocking=True
-        ), energy_target_lengths.cuda(rank, non_blocking=True)
+            rank, non_blocking=NON_BLOCKING
+        ), energy_target_lengths.cuda(rank, non_blocking=NON_BLOCKING)
         pitch_targets, pitch_target_lengths = pitch_targets.cuda(
-            rank, non_blocking=True
-        ), pitch_target_lengths.cuda(rank, non_blocking=True)
+            rank, non_blocking=NON_BLOCKING
+        ), pitch_target_lengths.cuda(rank, non_blocking=NON_BLOCKING)
 
         with autocast(enabled=hps.train.fp16_run):
             (
@@ -492,4 +505,4 @@ def evaluate(hps, generator, eval_loader, writer_eval):
 
 
 if __name__ == "__main__":
-    main()
+    main_debug()
