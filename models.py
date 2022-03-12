@@ -7,7 +7,7 @@ from torch.nn import functional as F
 import commons
 import modules
 import attentions
-import monotonic_align
+# import monotonic_align
 
 from torch.nn import Conv1d, ConvTranspose1d, AvgPool1d, Conv2d
 from torch.nn.utils import weight_norm, remove_weight_norm, spectral_norm
@@ -635,7 +635,7 @@ class SynthesizerTrn(nn.Module):
         d_targets=None,
     ):
 
-        x, m_p, logs_p, x_mask = self.enc_p(x, x_lengths)
+        x, m_p, logs_p, x_mask = self.enc_p(x, x_lengths) # x is b, k, t
         if self.n_speakers > 0:
             g = self.emb_g(sid).unsqueeze(-1)  # [b, h, 1]
         else:
@@ -648,6 +648,7 @@ class SynthesizerTrn(nn.Module):
         # DONE: set controls to 1.0 for training, but add as kwargs to infer method
         # DONE: replace with preprocessed targets
         # DONE: replace with max from data
+        
         max_mel_len = max(y_lengths)
         (
             output,
@@ -658,18 +659,18 @@ class SynthesizerTrn(nn.Module):
             mel_lens,
             mel_masks,
         ) = self.variance_adaptor(
-            x,
-            x_mask,
-            y_mask,
+            x.transpose(1,2),
+            x_mask.transpose(1,2),
+            y_mask.transpose(1,2),
             max_mel_len,
             pitch_target=pitch,
             energy_target=energy,
-            d_targets=dur,
+            duration_target=dur,
             p_control=1.0,
             e_control=1.0,
             d_control=1.0,
-        )
-
+        ) # expects [b, text_t, k], returns [b, mel_t, k] 
+        
         # TODO: replace expanded prior values m_p and logs_p with output from variance adaptor
         # expand prior
         # m_p = torch.matmul(attn.squeeze(1), m_p.transpose(1, 2)).transpose(1, 2)

@@ -75,9 +75,9 @@ class TextAudioLoader(torch.utils.data.Dataset):
         pitch_path = os.path.join(
             self.adapter_feature_dir, "pitch", "0-pitch-{}.npy".format(bn)
         )
-        dur = np.load(dur_path)
-        energy = np.load(energy_path)
-        pitch = np.load(pitch_path)
+        dur = torch.from_numpy(np.load(dur_path)).long()
+        energy = torch.from_numpy(np.load(energy_path))
+        pitch = torch.from_numpy(np.load(pitch_path)).float()
         return dur, energy, pitch
 
     def get_audio(self, filename):
@@ -143,14 +143,10 @@ class TextAudioCollate:
         _, ids_sorted_decreasing = torch.sort(
             torch.LongTensor([x[1].size(1) for x in batch]), dim=0, descending=True
         )
-
         max_text_len = max([len(x[0]) for x in batch])
         max_spec_len = max([x[1].size(1) for x in batch])
         max_wav_len = max([x[2].size(1) for x in batch])
-        max_dur_len = max([x[3].size(1) for x in batch])
-        max_energy_len = max([x[4].size(1) for x in batch])
-        max_pitch_len = max([x[5].size(1) for x in batch])
-
+    
         text_lengths = torch.LongTensor(len(batch))
         spec_lengths = torch.LongTensor(len(batch))
         wav_lengths = torch.LongTensor(len(batch))
@@ -161,9 +157,9 @@ class TextAudioCollate:
         text_padded = torch.LongTensor(len(batch), max_text_len)
         spec_padded = torch.FloatTensor(len(batch), batch[0][1].size(0), max_spec_len)
         wav_padded = torch.FloatTensor(len(batch), 1, max_wav_len)
-        dur_padded = torch.LongTensor(len(batch), max_dur_len)
-        energy_padded = torch.FloatTensor(len(batch), max_energy_len)
-        pitch_padded = torch.FloatTensor(len(batch), max_pitch_len)
+        dur_padded = torch.LongTensor(len(batch), max_text_len)
+        energy_padded = torch.FloatTensor(len(batch), max_text_len)
+        pitch_padded = torch.FloatTensor(len(batch), max_text_len)
         text_padded.zero_()
         spec_padded.zero_()
         wav_padded.zero_()
@@ -186,16 +182,16 @@ class TextAudioCollate:
             wav_lengths[i] = wav.size(1)
 
             dur = row[3]
-            dur_padded[i, :, : dur.size(1)] = dur
-            dur_lengths[i] = dur.size(1)
+            dur_padded[i, : dur.size(0)] = dur
+            dur_lengths[i] = dur.size(0)
 
             energy = row[4]
-            energy_padded[i, :, : energy.size(1)] = energy
-            energy_lengths[i] = energy.size(1)
+            energy_padded[i, : energy.size(0)] = energy
+            energy_lengths[i] = energy.size(0)
 
             pitch = row[5]
-            pitch_padded[i, :, : pitch.size(1)] = pitch
-            pitch_lengths[i] = pitch.size(1)
+            pitch_padded[i, : pitch.size(0)] = pitch
+            pitch_lengths[i] = pitch.size(0)
 
         if self.return_ids:
             return (

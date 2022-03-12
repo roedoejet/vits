@@ -39,7 +39,7 @@ class VarianceAdaptor(nn.Module):
         assert pitch_quantization in ["linear", "log"]
         assert energy_quantization in ["linear", "log"]
         with open(
-            os.path.join(preprocess_config["path"]["preprocessed_path"], "stats.json")
+            os.path.join(preprocess_config["adapter_feature_dir"], "stats.json")
         ) as f:
             stats = json.load(f)
             pitch_min, pitch_max = stats["pitch"][:2]
@@ -110,10 +110,12 @@ class VarianceAdaptor(nn.Module):
     ):
 
         log_duration_prediction = self.duration_predictor(x, src_mask)
+
         if self.pitch_feature_level == "phoneme_level":
             pitch_prediction, pitch_embedding = self.get_pitch_embedding(
                 x, pitch_target, src_mask, p_control
             )
+            # DONE: x is [64, 125, 192] and pitch_embedding is [64, 52, 192] - determine the discrepancy for t. Padding was not fixed to text len
             x = x + pitch_embedding
         if self.energy_feature_level == "phoneme_level":
             energy_prediction, energy_embedding = self.get_energy_embedding(
@@ -239,9 +241,10 @@ class VariancePredictor(nn.Module):
         out = self.conv_layer(encoder_output)
         out = self.linear_layer(out)
         out = out.squeeze(-1)
+        mask = mask.squeeze(-1)
 
         if mask is not None:
-            out = out.masked_fill(mask, 0.0)
+            out = out * mask # changed from masked_fill due to non boolean mask
 
         return out
 
