@@ -7,7 +7,7 @@ import torch.utils.data
 
 import commons
 from mel_processing import spectrogram_torch
-from utils import load_wav_to_torch, load_filepaths_and_text
+from utils import load_wav, load_wav_to_torch, load_filepaths_and_text
 from text import text_to_sequence, cleaned_text_to_sequence
 
 
@@ -46,13 +46,16 @@ class TextAudioLoader(torch.utils.data.Dataset):
         # Store spectrogram lengths for Bucketing
         # wav_length ~= file_size / (wav_channels * Bytes per dim) = file_size / (1 * 2)
         # spec_length = wav_length // hop_length
-
+        # TODO: because FS2 uses alignments, file size is no longer reliable for length
         audiopaths_and_text_new = []
         lengths = []
         for audiopath, text in self.audiopaths_and_text:
             if self.min_text_len <= len(text) and len(text) <= self.max_text_len:
                 audiopaths_and_text_new.append([audiopath, text])
-                lengths.append(os.path.getsize(audiopath) // (2 * self.hop_length))
+                bn, _ = os.path.splitext(os.path.basename(audiopath))
+                tg_path = os.path.join(self.adapter_feature_dir, "TextGrid", f"{bn}.TextGrid")
+                audio, sampling_rate = load_wav(audiopath, tg_path)
+                lengths.append(len(audio) // (2 * self.hop_length))
         self.audiopaths_and_text = audiopaths_and_text_new
         self.lengths = lengths
 
@@ -82,6 +85,8 @@ class TextAudioLoader(torch.utils.data.Dataset):
 
     def get_audio(self, filename):
         # DONE: change to FS2 audio
+        # if filename == "/home/aip000/aip000/corpora/Sencoten/tts_speech_corpus_penac_denoised/wavs/str0360.wav":
+        #     breakpoint()
         bn, _ = os.path.splitext(os.path.basename(filename))
         tg_path = os.path.join(self.adapter_feature_dir, "TextGrid", f"{bn}.TextGrid")
         audio, sampling_rate = load_wav_to_torch(filename, tg_path)
@@ -421,6 +426,7 @@ class DistributedBucketSampler(torch.utils.data.distributed.DistributedSampler):
         rank=None,
         shuffle=True,
     ):
+        num_replicas = max(1, num_replicas)
         super().__init__(dataset, num_replicas=num_replicas, rank=rank, shuffle=shuffle)
         self.lengths = dataset.lengths
         self.batch_size = batch_size

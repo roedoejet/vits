@@ -193,6 +193,10 @@ def get_alignment(tier, sampling_rate, hop_length=256):
 
 
 def load_wav_to_torch(full_path, tg_path):
+    wav, sampling_rate = load_wav(full_path, tg_path)
+    return torch.FloatTensor(wav), sampling_rate
+
+def load_wav(full_path, tg_path):
     # DONE: get tg path
     textgrid = tgt.io.read_textgrid(tg_path)
     sampling_rate, wav = read(full_path)
@@ -200,8 +204,7 @@ def load_wav_to_torch(full_path, tg_path):
         textgrid.get_tier_by_name("phones"), sampling_rate=sampling_rate
     )
     wav = wav[int(sampling_rate * start) : int(sampling_rate * end)].astype(np.float32)
-    return torch.FloatTensor(wav), sampling_rate
-
+    return wav, sampling_rate
 
 def load_filepaths_and_text(filename, split="|"):
     with open(filename, encoding="utf-8") as f:
@@ -346,11 +349,33 @@ def get_mask_from_lengths(lengths, max_len=None):
     batch_size = lengths.shape[0]
     if max_len is None:
         max_len = torch.max(lengths).item()
-
-    ids = torch.arange(0, max_len).unsqueeze(0).expand(batch_size, -1).to(device)
+    # TODO: change this to be cpu-only compliant
+    ids = torch.arange(0, max_len).unsqueeze(0).expand(batch_size, -1).cuda()
     mask = ids >= lengths.unsqueeze(1).expand(-1, max_len)
 
     return mask
+
+def get_attn_from_durs(durs, max_mel_len):
+    text_len = durs.size(1)
+    batches = []
+    for i, batch in enumerate(durs):
+        new_batch = []
+        for j_idx, dur in enumerate(batch):
+            zeros = torch.zeros(text_len)
+            if dur:
+                zeros[j_idx] = 1
+                new_batch.append(zeros.expand(dur, text_len))
+        new_batch = torch.cat(new_batch)
+        new_batch_size = new_batch.size(0)
+        try:
+            new_batch = torch.cat((new_batch, torch.zeros(max_mel_len-new_batch_size, text_len)))
+        except:
+            # TODO: why is this happening?
+            logger.warn(f"max mel is {max_mel_len} but new batch size calculated from durations is {new_batch_size}")
+            new_batch = new_batch[:max_mel_len, :]
+        batches.append(new_batch)
+    return torch.stack(batches)
+
 
 
 def pad(input_ele, mel_max_length=None):

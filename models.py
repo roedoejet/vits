@@ -12,7 +12,9 @@ import attentions
 from torch.nn import Conv1d, ConvTranspose1d, AvgPool1d, Conv2d
 from torch.nn.utils import weight_norm, remove_weight_norm, spectral_norm
 from commons import init_weights, get_padding
+from utils import get_attn_from_durs
 from variance_adaptor import VarianceAdaptor
+
 
 
 class StochasticDurationPredictor(nn.Module):
@@ -605,15 +607,6 @@ class SynthesizerTrn(nn.Module):
             inter_channels, hidden_channels, 5, 1, 4, gin_channels=gin_channels
         )
 
-        if use_sdp:
-            self.dp = StochasticDurationPredictor(
-                hidden_channels, 192, 3, 0.5, 4, gin_channels=gin_channels
-            )
-        else:
-            self.dp = DurationPredictor(
-                hidden_channels, 256, 3, 0.5, gin_channels=gin_channels
-            )
-
         if n_speakers > 1:
             self.emb_g = nn.Embedding(n_speakers, gin_channels)
 
@@ -633,6 +626,7 @@ class SynthesizerTrn(nn.Module):
         p_targets=None,
         e_targets=None,
         d_targets=None,
+        cpu_only=False
     ):
 
         x, m_p, logs_p, x_mask = self.enc_p(x, x_lengths) # x is b, k, t
@@ -670,20 +664,28 @@ class SynthesizerTrn(nn.Module):
             e_control=1.0,
             d_control=1.0,
         ) # expects [b, text_t, k], returns [b, mel_t, k] 
-        
-        # TODO: replace expanded prior values m_p and logs_p with output from variance adaptor
+       
+        # DONE: replace expanded prior values m_p and logs_p with output from variance adaptor
         # expand prior
-        # m_p = torch.matmul(attn.squeeze(1), m_p.transpose(1, 2)).transpose(1, 2)
-        # logs_p = torch.matmul(attn.squeeze(1), logs_p.transpose(1, 2)).transpose(1, 2)
-
+        # m_p: b, k, t
+        # d_rounded: b, t
+        attn = get_attn_from_durs(d_rounded, max_mel_len) # b, t_mel, t_text
+        
+        if not cpu_only:
+            attn = attn.cuda()
+        # create attn from durations
+        m_p = torch.matmul(attn, m_p.transpose(1, 2)).transpose(1, 2)
+        logs_p = torch.matmul(attn, logs_p.transpose(1, 2)).transpose(1, 2)
         z_slice, ids_slice = commons.rand_slice_segments(
             z, y_lengths, self.segment_size
         )
         o = self.dec(z_slice, g=g)
         # DONE: Removed l_length and attn
+        # Added attn back in for tensorboard
         # attn was just used to print to the logger and l_length was used to calculate the duration loss which is unused here
         return (
             o,
+            attn.unsqueeze(1),
             ids_slice,
             x_mask,
             y_mask,
@@ -704,8 +706,8 @@ class SynthesizerTrn(nn.Module):
         e_control=1.0,
         d_control=1.0,
     ):
-        # TODO: adapt to new system
-        x, m_p, logs_p, x_mask = self.enc_p(x, x_lengths)
+        # DONE: adapt to new system
+        x, m_p, logs_p, x_mask = self.enc_p(x, x_lengths) # x is b, k, t
         if self.n_speakers > 0:
             g = self.emb_g(sid).unsqueeze(-1)  # [b, h, 1]
         else:
@@ -720,35 +722,29 @@ class SynthesizerTrn(nn.Module):
             mel_lens,
             mel_masks,
         ) = self.variance_adaptor(
-            x,
-            x_mask,
-            y_mask,
-            max_len,
+            x.transpose(1,2),
+            x_mask.transpose(1,2),
             p_control=1.0,
             e_control=1.0,
             d_control=1.0,
         )
-        # if self.use_sdp:
-        #     logw = self.dp(x, x_mask, g=g, reverse=True, noise_scale=noise_scale_w)
-        # else:
-        #     logw = self.dp(x, x_mask, g=g)
-        # w = torch.exp(logw) * x_mask * length_scale
-        # w_ceil = torch.ceil(w)
 
-        # TODO: use durations as ceiling
+        # DONE: use durations as ceilingß
+        w = torch.exp(log_d_predictions) * x_mask * length_scale
+        w_ceil = torch.ceil(w)
         y_lengths = torch.clamp_min(torch.sum(w_ceil, [1, 2]), 1).long()
         y_mask = torch.unsqueeze(commons.sequence_mask(y_lengths, None), 1).to(
             x_mask.dtype
         )
-        # attn_mask = torch.unsqueeze(x_mask, 2) * torch.unsqueeze(y_mask, -1)
-        # attn = commons.generate_path(w_ceil, attn_mask)
-        # TODO: expand
-        # m_p = torch.matmul(attn.squeeze(1), m_p.transpose(1, 2)).transpose(
-        #     1, 2
-        # )  # [b, t', t], [b, t, d] -> [b, d, t']
-        # logs_p = torch.matmul(attn.squeeze(1), logs_p.transpose(1, 2)).transpose(
-        #     1, 2
-        # )  # [b, t', t], [b, t, d] -> [b, d, t']
+        attn_mask = torch.unsqueeze(x_mask, 2) * torch.unsqueeze(y_mask, -1)
+        attn = commons.generate_path(w_ceil, attn_mask)
+        # DONE: expand
+        m_p = torch.matmul(attn.squeeze(1), m_p.transpose(1, 2)).transpose(
+            1, 2
+        )  # [b, t', t], [b, t, d] -> [b, d, t']
+        logs_p = torch.matmul(attn.squeeze(1), logs_p.transpose(1, 2)).transpose(
+            1, 2
+        )  # [b, t', t], [b, t, d] -> [b, d, t']
 
         z_p = m_p + torch.randn_like(m_p) * torch.exp(logs_p) * noise_scale
         z = self.flow(z_p, y_mask, g=g, reverse=True)

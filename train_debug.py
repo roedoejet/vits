@@ -30,7 +30,7 @@ global_step = 0
 
 MSE_LOSS = nn.MSELoss()
 
-NUM_WORKERS = 8
+NUM_WORKERS = 0
 
 def main():
     """Assume Single Node Multi GPUs Training Only"""
@@ -133,8 +133,8 @@ def run(rank, n_gpus, hps, debug=False, cpu_only=False):
     )
     if not debug:
         # TODO: figure out why find_unused_parameters is required
-        net_g = DDP(net_g, device_ids=[rank], find_unused_parameters=True)
-        net_d = DDP(net_d, device_ids=[rank], find_unused_parameters=True)
+        net_g = DDP(net_g, device_ids=[rank])
+        net_d = DDP(net_d, device_ids=[rank])
 
     try:
         _, _, _, epoch_str = utils.load_checkpoint(
@@ -524,4 +524,4 @@ def evaluate(hps, generator, eval_loader, writer_eval, debug=False, cpu_only=Fal
 
 
 if __name__ == "__main__":
-    main()
+    main_debug()
